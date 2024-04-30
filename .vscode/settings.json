@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "memlib.h": "c",
+        "mm.h": "c",
+        "macros.h": "c"
+    }
+}
