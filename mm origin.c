@@ -92,7 +92,7 @@ static void *extend_heap(size_t words)
     char *bp;
     size_t size;
 
-    size = (words & 0x1) ? (words + 1) * WSIZE : words * WSIZE;
+    size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
     if ((long)(bp = mem_sbrk(size)) == -1) 
         return NULL;
 
@@ -135,15 +135,11 @@ void place(void *bp, size_t asize)
     if ((csize - asize) >= (2 * DSIZE)) {
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
+        
+        bp = NEXT_BLKP(bp);
 
-        //// place code 0
-        PUT(HDRP(NEXT_BLKP(bp)), PACK(csize - asize, 0));    // set Header, 0
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(csize - asize, 0));    // set Footer, 0        
-
-        //// place code 1 - 10% faster than place 0
-        // bp = NEXT_BLKP(bp);
-        // PUT(HDRP(bp), PACK(csize - asize, 0));    // set Header, 0
-        // PUT(FTRP(bp), PACK(csize - asize, 0));    // set Footer, 0
+        PUT(HDRP(bp), PACK(csize - asize, 0));    // set Header, 0
+        PUT(FTRP(bp), PACK(csize - asize, 0));    // set Footer, 0
     }
     else {
         PUT(HDRP(bp), PACK(csize, 1));
@@ -292,55 +288,75 @@ void *mm_realloc_o(void *ptr, size_t size)
 
 void *mm_realloc(void *ptr, size_t size)
 {
-    if (ptr == NULL) return NULL;
-    if (size == 0) {
+    if (ptr == NULL) {
+        return mm_malloc(size);
+    }
+
+    if (size <= 0) {
         mm_free(ptr);
         return NULL;
     }
 
-    size_t csize = GET_SIZE(HDRP(ptr));
-    size_t nsize = GET_SIZE(HDRP(NEXT_BLKP(ptr)));
-    // size_t asize = size + 2*WSIZE;
+    void *oldptr = ptr;
+    
     size_t asize;
+    size_t nsize = GET_SIZE(HDRP(NEXT_BLKP(ptr)));
+    size_t csize = GET_SIZE(HDRP(ptr));
+    
+    if (size + DSIZE <= GET_SIZE(HDRP(ptr)))
+        return ptr;
 
+    // ALIGN
     if (size <= DSIZE)
         asize = 2 * DSIZE;
     else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
 
-    if (asize < csize) {
-        return ptr;
-    }
-    if (!GET_ALLOC(HDRP(NEXT_BLKP(ptr))) && csize + nsize >= asize && csize + nsize < asize) {
-        PUT(HDRP(ptr), PACK(asize, 1));
-        PUT(FTRP(ptr), PACK(asize, 1));
-        return ptr;
-    }
-    // 분할
-    else if (!GET_ALLOC(HDRP(NEXT_BLKP(ptr))) && csize + nsize > asize) {
-        PUT(HDRP(ptr), PACK(asize, 1));
-        PUT(FTRP(ptr), PACK(asize, 1));
+    // CASE 1 - next free
+    if (!GET_ALLOC(HDRP(NEXT_BLKP(ptr))) && nsize + csize - DSIZE >= asize) {
+        // 1-1. ptr 다음 인접 블록이 비어있고, current + next >= asize, 할당 가능?
+        // printf("1:%d ", (csize + nsize));
+        place(ptr, asize);
+        // if ((asize) >= (2 * DSIZE)) {
+        //     PUT(HDRP(ptr), PACK(asize, 1));
+        //     PUT(FTRP(ptr), PACK(asize, 1));
 
-        void *nblk_ptr = NEXT_BLKP(ptr);
-        PUT(HDRP(nblk_ptr), PACK(csize + nsize - asize , 0));
-        PUT(FTRP(nblk_ptr), PACK(csize + nsize - asize , 0));
-        // next_fitp = ptr; // mem util - 3%
+        //     ptr = NEXT_BLKP(ptr);
+
+        //     PUT(HDRP(ptr), PACK(csize - asize, 0));
+        //     PUT(FTRP(ptr), PACK(csize - asize, 0));
+        // }
+        // else {
+        //     PUT(HDRP(ptr), PACK(csize, 1));
+        //     PUT(FTRP(ptr), PACK(csize, 1));
+        // }
+
         return ptr;
     }
-    // 메모리 끝 부분, 필요한 만큼만 extend
-    else if (GET_SIZE(HDRP(NEXT_BLKP(ptr))) == 0) {
-        extend_heap(asize - csize);
-        PUT(HDRP(ptr), PACK(asize, 1));
-        PUT(FTRP(ptr), PACK(asize, 1));
-        return ptr;
-    }
+    // // 1-2. ptr 다음 인접 블록이 비어있고, 병합했을 때 요구되는 크기엔 미치지 못하지만, 마지막 블록?
+    // else if (GET_SIZE(HDRP(NEXT_BLKP(NEXT_BLKP(ptr)))) == 0) {
+    //     // printf("2:%d ", asize - (csize + nsize));
+    //     extend_heap(asize - (csize + nsize));
+    //     place(ptr, asize);
+    //     return ptr;
+    // }
+    // // 1-3. ptr 다음 인접 블록이 에필로그?
+    // else if (GET_SIZE(HDRP(NEXT_BLKP(ptr))) == 0){
+    //     // printf("3:%d ", (csize + nsize));
+    //     extend_heap(asize - csize);
+    //     place(ptr, asize);
+    //     return ptr;
+    // }
 
-    void *newptr = mm_malloc(size + DSIZE);
-    if (newptr == NULL) return NULL;
-
-    memmove(newptr, ptr, size + DSIZE);
-    // next_fitp = newptr;
-    mm_free(ptr);
+    void *newptr;
+    size_t copySize;
+    // CASE 2 - search
+    newptr = mm_malloc(size);
+    copySize = GET_SIZE(HDRP(oldptr));
+    if (size < copySize)
+      copySize = size;
+    memmove(newptr, oldptr, copySize);
+    mm_free(oldptr);
     return newptr;
 }
 
