@@ -141,14 +141,33 @@ void place(void *bp, size_t asize)
         PUT(FTRP(NEXT_BLKP(bp)), PACK(csize - asize, 0));    // set Footer, 0        
 
         // place code 1 - 10% faster than place 0
-        // bp = NEXT_BLKP(bp);
-        // PUT(HDRP(bp), PACK(csize - asize, 0));    // set Header, 0
-        // PUT(FTRP(bp), PACK(csize - asize, 0));    // set Footer, 0
+        bp = NEXT_BLKP(bp);
+        PUT(HDRP(bp), PACK(csize - asize, 0));    // set Header, 0
+        PUT(FTRP(bp), PACK(csize - asize, 0));    // set Footer, 0
     }
     else {
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
+}
+
+static void *find_fit3(size_t asize)
+{
+    void *bp, *best_fit_bp = NULL;
+    size_t min_size = SIZE_MAX;
+
+    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp))
+    {
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp))) && min_size > GET_SIZE(HDRP(bp))){
+            best_fit_bp = bp;
+            // printf("%d vs %d \n", GET_SIZE(HDRP(best_fit_bp)), GET_SIZE(HDRP(bp)));
+        }
+    }
+
+    if (best_fit_bp == NULL) {
+        return NULL;
+    }
+    return best_fit_bp;
 }
 
 #define NEXTFIT
@@ -313,60 +332,36 @@ void *mm_realloc(void *ptr, size_t size)
 
     size_t csize = GET_SIZE(HDRP(ptr));
     size_t nsize = GET_SIZE(HDRP(NEXT_BLKP(ptr)));
-    size_t asize = size + DSIZE;
+    // size_t asize = size + 2*WSIZE;
+    size_t asize;
 
-    // if (size <= DSIZE)
-    //     asize = 2 * DSIZE;
-    // else
-    //     asize = DSIZE * ALIGN(size);
+    if (size <= DSIZE)
+        asize = 2 * DSIZE;
+    else
+        asize = DSIZE * ALIGN(size);
         // asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
 
     if (asize < csize) {
         return ptr;
     }
-    else if (!GET_ALLOC(HDRP(NEXT_BLKP(ptr))) && csize + nsize >= asize) {
-        PUT(HDRP(ptr), PACK(csize + nsize, 1));
-        PUT(FTRP(ptr), PACK(csize + nsize, 1));
-        next_fitp = ptr;
+    else if (!GET_ALLOC(HDRP(NEXT_BLKP(ptr))) && csize + nsize >= asize && csize + nsize < asize) {
+        PUT(HDRP(ptr), PACK(asize, 1));
+        PUT(FTRP(ptr), PACK(asize, 1));
         return ptr;
     }
-    // 핏 탐색
-    else {
-        // void *bp;
-        // if ((bp = find_fit(asize)) != NULL) {
-        //     memmove(bp, ptr, asize);
-        //     place(bp, asize);
-        //     mm_free(ptr);
-        //     return bp;
-        // }
-        // else {
-        //     void *newptr = mm_malloc(asize);
-        //     if (newptr == NULL) return NULL;
-        //     memmove(newptr, ptr, asize);
-        //     next_fitp = newptr;
-        //     mm_free(ptr);
-        //     return newptr;
-        // }
-        void *newptr = mm_malloc(asize);
-        if (newptr == NULL) return NULL;
-        memmove(newptr, ptr, asize);
-        next_fitp = newptr;
-        mm_free(ptr);
-        return newptr;
-    }
-    // // 분할
-    // else if (!GET_ALLOC(HDRP(NEXT_BLKP(ptr))) && csize + nsize > asize + 2*DSIZE) {
-    //     // PUT(HDRP(ptr), PACK(csize + nsize, 1));
-    //     // PUT(FTRP(ptr), PACK(csize + nsize, 1));
+    // 분할
+    else if (!GET_ALLOC(HDRP(NEXT_BLKP(ptr))) && csize + nsize > asize) {
+        // PUT(HDRP(ptr), PACK(csize + nsize, 1));
+        // PUT(FTRP(ptr), PACK(csize + nsize, 1));
         
-    //     PUT(HDRP(ptr), PACK(asize, 1));
-    //     PUT(FTRP(ptr), PACK(asize, 1));
-    //     void *nblk_ptr = NEXT_BLKP(ptr);
-    //     PUT(HDRP(nblk_ptr), PACK(csize + nsize - asize , 0));
-    //     PUT(FTRP(nblk_ptr), PACK(csize + nsize - asize , 0));
-    //     next_fitp = ptr; // mem util - 3%
-    //     return ptr;
-    // }
+        PUT(HDRP(ptr), PACK(asize, 1));
+        PUT(FTRP(ptr), PACK(asize, 1));
+        void *nblk_ptr = NEXT_BLKP(ptr);
+        PUT(HDRP(nblk_ptr), PACK(csize + nsize - asize , 0));
+        PUT(FTRP(nblk_ptr), PACK(csize + nsize - asize , 0));
+        // next_fitp = ptr; // mem util - 3%
+        return ptr;
+    }
     // 메모리 끝 부분, 필요한 만큼만 extend
     // else if (GET_SIZE(HDRP(NEXT_BLKP(ptr))) == 0) {
     //     extend_heap(asize - csize);
@@ -381,14 +376,14 @@ void *mm_realloc(void *ptr, size_t size)
     //     PUT(FTRP(ptr), PACK(asize, 1));
     //     return ptr;
     // }
-    // else {
-    //     void *newptr = mm_malloc(asize);
-    //     if (newptr == NULL) return NULL;
-    //     memmove(newptr, ptr, asize);
-    //     next_fitp = newptr;
-    //     mm_free(ptr);
-    //     return newptr;
-    // }
+    else {
+        void *newptr = mm_malloc(size + DSIZE);
+        if (newptr == NULL) return NULL;
+        memmove(newptr, ptr, size + DSIZE);
+        // next_fitp = newptr;
+        mm_free(ptr);
+        return newptr;
+    }
 }
 
 void *mm_realloc33(void *ptr, size_t size) // 재할당
